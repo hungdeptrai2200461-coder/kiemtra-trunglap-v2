@@ -1,0 +1,30 @@
+# Thư viện và cấu hình bí mật
+node_modules/
+.env
+
+# Dữ liệu vận hành
+restructuring_data/
+uploads/
+upload2/
+du-lieu-day-du.jsonl.gz
+
+# Kết quả gỡ lỗi
+debug_output/
+debug_text/
+debug_sentences/
+kiem_thu/
+*.log
+debug_plagiarism.txt
+diff.txt
+docx_sentences.txt
+pdf_sentences.txt
+sentence_mapping.json
+output.json
+
+# File hệ điều hành
+.DS_Store
+Thumbs.db
+
+# File export
+*.docx
+*.xlsx

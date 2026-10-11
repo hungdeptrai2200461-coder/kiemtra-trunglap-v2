@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thống kê báo cáo</title>
+    <link rel="icon" href="../images/favicon.ico" type="image/x-icon">
+    <link rel="stylesheet" href="../css/quanlytailieu.css">
+    <link rel="stylesheet" href="../css/thongkebaocao.css">
+    <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet" href="../css/header-chung.css">
+    <!-- Hộp thoại thông báo dùng chung: nạp trước mọi script khác để thay window.alert -->
+    <script src="../js/hop-thoai.js"></script>
+</head>
+
+<body>
+
+    <header>
+        <nav class="menu">
+            <div class="menu-container">
+                <div class="logo">
+                    <img src="../images/logo.jpg" alt="Logo">
+                    <p>Phần mềm kiểm tra trùng lặp văn bản</p>
+                </div>
+                <ul>
+                    <li>
+                        <a href="../pages/trangchu_saudn.html">
+                            Trang chủ
+                        </a>
+                    </li>
+                    <li>
+                        <a href="../pages/quanlytailieu.html">
+                            Quản lý tài liệu
+                        </a>
+                    </li>
+                    <li>
+                        <a href="../pages/quanlylophoc.html">
+                            Quản lý lớp học
+                        </a>
+                    </li>
+                    <li>
+                        <a href="../pages/huongdanchitiet.html">
+                            Hướng dẫn chi tiết
+                        </a>
+                    </li>
+                    <li class="user-dropdown-container">
+                        <div class="user-avatar-btn" id="userMenuBtn">
+                            <img src="../images/default-avatar.png" id="userAvatarImg" alt="Avatar">
+                            <span id="navUserName">Tài khoản</span>
+                            <i class="fa-solid fa-chevron-down dropdown-arrow"></i>
+                        </div>
+
+                        <!-- Menu Dropdown -->
+                        <div class="user-dropdown-menu" id="userDropdownMenu">
+                            <a href="../pages/taikhoan.html" class="dropdown-item">
+                                <i class="fa-regular fa-user"></i>
+                                <span>Tài khoản</span>
+                            </a>
+                            <a href="../pages/matkhau.html" class="dropdown-item">
+                                <i class="fa-solid fa-lock"></i>
+                                <span>Đổi mật khẩu</span>
+                            </a>
+                            <a href="../pages/dangnhap.html" class="dropdown-item text-danger" id="logoutBtn">
+                                <i class="fa-solid fa-right-from-bracket"></i>
+                                <span>Đăng xuất</span>
+                            </a>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+    </header>
+
+    <main class="main-content">
+        <div class="page-header">
+            <h2>Thống kê báo cáo</h2>
+
+            <div class="action-bar">
+                <button class="refresh-btn" id="btnLamMoi" title="Đồng bộ lại (Refresh)">
+                    <i class="fa-solid fa-rotate"></i>
+                </button>
+                <button class="upload-btn" id="btnXuatExcel">
+                    <i class="fa-solid fa-file-excel"></i> Xuất Excel
+                </button>
+            </div>
+        </div>
+
+        <!-- Các chỉ số tổng quan -->
+        <section class="tk-the-so">
+
+            <article class="tk-the tk-the--bam-duoc" id="theTongBai">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-file-lines"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Tổng số bài đã nộp</div>
+                    <div class="tk-the__so" id="soTongBai">--</div>
+                    <div class="tk-the__phu" id="phuTongBai">&nbsp;</div>
+                </div>
+            </article>
+
+            <article class="tk-the tk-the--xanh tk-the--bam-duoc" id="theLopHoc">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-chalkboard-user"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Thống kê lớp học</div>
+                    <div class="tk-the__so" id="soLopHoc">--</div>
+                    <div class="tk-the__phu" id="phuLopHoc">&nbsp;</div>
+                </div>
+            </article>
+
+            <article class="tk-the tk-the--tim tk-the--bam-duoc" id="theKetQua">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-file-circle-check"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Thống kê kết quả</div>
+                    <div class="tk-the__so" id="soKetQua">--</div>
+                    <div class="tk-the__phu" id="phuKetQua">&nbsp;</div>
+                </div>
+            </article>
+
+            <article class="tk-the tk-the--luc" id="theTaiKhoan">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-users"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Thống kê tài khoản</div>
+                    <div class="tk-the__so" id="soTaiKhoan">--</div>
+                    <div class="tk-the__phu">
+                        <button type="button" class="tk-lien-ket-nho" data-vai-tro="giang_vien">Giảng viên</button>
+                        <span class="tk-gach-ngan">|</span>
+                        <button type="button" class="tk-lien-ket-nho" data-vai-tro="sinh_vien">Sinh viên</button>
+                    </div>
+                </div>
+            </article>
+
+            <article class="tk-the tk-the--do tk-the--bam-duoc" id="theVuotNguong">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Vượt ngưỡng cảnh báo</div>
+                    <div class="tk-the__so" id="soVuotNguong">--</div>
+                    <div class="tk-the__phu">Từ 30% trở lên — bấm để xem</div>
+                </div>
+            </article>
+
+            <article class="tk-the tk-the--xam tk-the--bam-duoc" id="theDangXuLy">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-hourglass-half"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Đang xử lý</div>
+                    <div class="tk-the__so" id="soDangXuLy">--</div>
+                    <div class="tk-the__phu">Chưa có kết quả — bấm để xem</div>
+                </div>
+            </article>
+
+            <!-- THẺ THỐNG KÊ LỖI: tệp toàn hình ảnh / chấm hỏng -->
+            <article class="tk-the tk-the--do tk-the--bam-duoc" id="theLoi">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-circle-exclamation"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Thống kê lỗi</div>
+                    <div class="tk-the__so" id="soLoi">--</div>
+                    <div class="tk-the__phu">Không đọc được nội dung — bấm để xem</div>
+                </div>
+            </article>
+
+            <!-- THẺ ĐÁNH GIÁ (YÊU CẦU 3) -->
+            <article class="tk-the tk-the--vang tk-the--bam-duoc" id="theDanhGia">
+                <div class="tk-the__bieu-tuong"><i class="fa-solid fa-star"></i></div>
+                <div class="tk-the__noi-dung">
+                    <div class="tk-the__nhan">Đánh giá phần mềm</div>
+                    <div class="tk-the__so" id="soDanhGia">--</div>
+                    <div class="tk-the__phu" id="phuDanhGia">Bấm để xem chi tiết</div>
+                </div>
+            </article>
+        </section>
+
+        <!-- ================= KHUNG TỔNG QUAN (mặc định) ================= -->
+        <div id="khungTongQuan">
+
+        <!-- Phân bố tỉ lệ -->
+        <section class="tk-khoi">
+            <div class="tk-khoi__dau">
+                <h3>Phân bố tỉ lệ trùng lặp</h3>
+                <span class="tk-ghi-chu">Số bài theo từng mức — bấm vào cột để lọc</span>
+            </div>
+            <div class="tk-bieu-do" id="bieuDo"></div>
+        </section>
+
+        <!-- Cho biết bảng bên dưới đang hiện nhóm nào, vì bấm mỗi thẻ số ở
+             trên sẽ lọc bảng theo một nhóm khác nhau -->
+        <p class="tk-nhan-danh-sach" id="nhanDanhSach">Toàn bộ báo cáo</p>
+
+        <div class="filter-section">
+            <label for="locMa">ID</label>
+            <input type="text" id="locMa" placeholder="ID">
+
+            <label for="locTieuDe">Tiêu đề</label>
+            <input type="text" id="locTieuDe" placeholder="Tiêu đề">
+
+            <label for="locMuc">Mức tỉ lệ</label>
+            <!-- Danh sách mức do thongkebaocao.js sinh ra từ đúng bộ mốc đang vẽ
+                 biểu đồ, để hai chỗ không bao giờ lệch nhau. -->
+            <select id="locMuc">
+                <option value="">Tất cả</option>
+            </select>
+
+            <label for="locTrangThai">Trạng thái</label>
+            <select id="locTrangThai">
+                <option value="">Tất cả</option>
+                <option value="Đã xử lý">Đã xử lý</option>
+                <option value="Đang xử lý">Đang xử lý</option>
+                <option value="Lỗi">Lỗi</option>
+            </select>
+
+            <button type="button" class="clear-btn" id="btnXoaLoc">Xóa bộ lọc</button>
+        </div>
+
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th data-sap="id_bao_cao">ID <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="tieu_de">Tiêu đề <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="ten_nguoi_nop">Người nộp <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="ngay_tai_len">Ngày tải lên <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="ti_le_trung_lap" class="tk-cot-rong">Độ trùng lặp <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="ti_le_cau" class="tk-cot-rong">Tỉ lệ câu trùng <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="ti_le_tu" class="tk-cot-rong">Tỉ lệ từ trùng <i class="fa-solid fa-sort"></i></th>
+                    <th data-sap="trang_thai">Trạng thái <i class="fa-solid fa-sort"></i></th>
+                    <th>Hành động</th>
+                </tr>
+            </thead>
+            <tbody id="tkThanBang">
+                <tr>
+                    <td colspan="9" class="no-data">Đang tải dữ liệu...</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="pagination">
+            <span>Tổng <strong id="tkTongDong">0</strong></span>
+
+            <select id="soDongMoiTrang">
+                <option value="10">10/trang</option>
+                <option value="20">20/trang</option>
+                <option value="50">50/trang</option>
+                <option value="100">100/trang</option>
+            </select>
+
+            <button type="button" class="page-btn" id="btnTrangTruoc">&lsaquo;</button>
+            <span id="tkSoTrang">1 / 1</span>
+            <button type="button" class="page-btn" id="btnTrangSau">&rsaquo;</button>
+        </div>
+
+        </div><!-- /khungTongQuan -->
+
+        <!-- ================= KHUNG THỐNG KÊ TÀI KHOẢN ================= -->
+        <div id="khungTaiKhoan" class="tk-khung-phu" hidden>
+
+            <div class="tk-duong-dan">
+                <button type="button" class="tk-nut-quay-lai" data-ve="tong-quan">
+                    <i class="fa-solid fa-arrow-left"></i> Quay lại tổng quan
+                </button>
+                <h3 id="tkTieuDeTaiKhoan">Danh sách tài khoản</h3>
+
+                <button type="button" class="upload-btn tk-nut-xuat" id="btnXuatTaiKhoan">
+                    <i class="fa-solid fa-file-excel"></i> Xuất danh sách
+                </button>
+            </div>
+
+            <div class="tk-tab">
+                <button type="button" class="tk-tab__nut" data-vai-tro="giang_vien">Giảng viên</button>
+                <button type="button" class="tk-tab__nut" data-vai-tro="sinh_vien">Sinh viên</button>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <!-- Tiêu đề cột do thongke-tai-khoan.js dựng theo vai trò -->
+                    <tr id="tkDauBangTaiKhoan"></tr>
+                </thead>
+                <tbody id="tkBangTaiKhoan">
+                    <tr><td colspan="9" class="no-data">Chọn vai trò để xem</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ================= KHUNG THỐNG KÊ LỚP HỌC ================= -->
+        <div id="khungLopHoc" class="tk-khung-phu" hidden>
+
+            <div class="tk-duong-dan">
+                <button type="button" class="tk-nut-quay-lai" data-ve="tong-quan">
+                    <i class="fa-solid fa-arrow-left"></i> Quay lại tổng quan
+                </button>
+                <span class="tk-duong-dan__chuoi" id="tkDuongDanLop"></span>
+
+                <!-- Chỉ hiện khi đang mở chi tiết một bài tập -->
+                <button type="button" class="export-btn" id="btnXuatNopBai" hidden>
+                    <i class="fa-solid fa-file-excel"></i> Xuất danh sách nộp bài
+                </button>
+            </div>
+
+            <div id="tkNoiDungLopHoc"></div>
+        </div>
+
+        <!-- ================= KHUNG THỐNG KÊ KẾT QUẢ ================= -->
+        <div id="khungKetQua" class="tk-khung-phu" hidden>
+
+            <div class="tk-duong-dan">
+                <button type="button" class="tk-nut-quay-lai" data-ve="tong-quan">
+                    <i class="fa-solid fa-arrow-left"></i> Quay lại tổng quan
+                </button>
+                <span class="tk-duong-dan__chuoi" id="tkDuongDanKetQua"></span>
+
+                <button type="button" class="upload-btn tk-nut-xuat" id="btnXuatKetQua">
+                    <i class="fa-solid fa-file-excel"></i> Xuất báo cáo
+                </button>
+            </div>
+
+            <div id="tkNoiDungKetQua"></div>
+        </div>
+
+        <!-- ================= KHUNG ĐÁNH GIÁ PHẦN MỀM ================= -->
+        <div id="khungDanhGia" class="tk-khung-phu" hidden>
+
+            <div class="tk-duong-dan">
+                <button type="button" class="tk-nut-quay-lai" data-ve="tong-quan">
+                    <i class="fa-solid fa-arrow-left"></i> Quay lại tổng quan
+                </button>
+                <h3>Đánh giá phần mềm</h3>
+
+                <button type="button" class="upload-btn tk-nut-xuat" id="btnXuatDanhGia">
+                    <i class="fa-solid fa-file-excel"></i> Xuất Excel
+                </button>
+            </div>
+
+            <!-- Thời gian lọc -->
+            <div class="filter-section" style="margin-bottom:16px;">
+                <label for="dgLocSao">Số sao</label>
+                <select id="dgLocSao">
+                    <option value="">Tất cả</option>
+                    <option value="5">⭐⭐⭐⭐⭐ (5 sao)</option>
+                    <option value="4">⭐⭐⭐⭐ (4 sao)</option>
+                    <option value="3">⭐⭐⭐ (3 sao)</option>
+                    <option value="2">⭐⭐ (2 sao)</option>
+                    <option value="1">⭐ (1 sao)</option>
+                </select>
+
+                <label for="dgLocTuNgay">Từ ngày</label>
+                <input type="date" id="dgLocTuNgay">
+
+                <label for="dgLocDenNgay">Đến ngày</label>
+                <input type="date" id="dgLocDenNgay">
+
+                <button type="button" class="clear-btn" id="dgBtnXoaLoc">Xóa bộ lọc</button>
+            </div>
+
+            <!-- Nội dung do thongke-danh-gia.js sinh ra -->
+            <div id="tkNoiDungDanhGia"></div>
+        </div>
+    </main>
+
+    <script src="../js/menu-theo-vai-tro.js"></script>
+    <script src="../js/trangchu_saudn.js"></script>
+    <script src="../js/thongkebaocao-tien-ich.js"></script>
+    <script src="../js/thongke-tai-khoan.js"></script>
+    <script src="../js/thongke-lop-hoc.js"></script>
+    <script src="../js/thongke-ket-qua.js"></script>
+    <script src="../js/thongke-danh-gia.js"></script>
+    <script src="../js/tinh-nang-moi.js"></script>
+    <script src="../js/thongkebaocao.js"></script>
+
+    <!-- Ảnh đại diện người dùng dùng chung cho mọi trang -->
+    <script src="../js/anh-dai-dien.js"></script>
+</body>
+
+</html>

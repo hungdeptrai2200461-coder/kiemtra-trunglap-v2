@@ -1,0 +1,107 @@
+KHÔI PHỤC DỮ LIỆU
+=================
+
+KHÔNG cần cài thêm phần mềm nào. Chỉ dùng Node.js đã có sẵn trên máy.
+
+QUAN TRỌNG: đừng tải hay cài lại MongoDB nữa. Lần cài MongoDB vừa rồi chính
+là nguyên nhân làm dữ liệu biến mất — bản mới cài xong sẽ lưu vào một thư mục
+riêng của nó, nên mở lên thấy trống trơn. Lỗi này do câu hướng dẫn kiểm tra
+trong tài liệu trước tôi viết sai, không phải do anh/chị làm sai.
+
+
+CẦN HAI TỆP GỬI KÈM
+====================
+
+    khoi-phuc-du-lieu.js
+    du-lieu-day-du.jsonl.gz     (38 MB)
+
+Chép cả hai vào thẳng thư mục dự án, để cạnh tệp server.js.
+Ví dụ: D:\du-an-kiem-tra-trung-lap
+
+
+BƯỚC 1. Tắt máy chủ và bộ xử lý tài liệu
+-----------------------------------------
+
+Đóng hai cửa sổ lệnh đang chạy node server.js và node workers/worker.js.
+Không tắt MongoDB, không đụng gì tới MongoDB.
+
+
+BƯỚC 2. Chạy khôi phục
+-----------------------
+
+Mở cửa sổ lệnh tại thư mục dự án: vào thư mục, bấm chuột trái vào thanh địa
+chỉ phía trên, gõ đè ba chữ cmd rồi Enter. Sau đó gõ:
+
+    node khoi-phuc-du-lieu.js
+
+Chờ khoảng hai đến năm phút. Màn hình sẽ chạy dần tên từng bảng kèm số bản
+ghi đã nạp.
+
+
+BƯỚC 3. Đọc kết quả
+--------------------
+
+Chạy xong, dòng cuối cùng phải là:
+
+    ✅ Khôi phục xong, số liệu khớp.
+
+Phía trên đó là bảng tổng kết, phải đúng như sau:
+
+    bai_tap                             15 bản ghi
+    bao_cao                            667 bản ghi
+    cau_hinh_he_thong                    1 bản ghi
+    chi_so_cau                      132574 bản ghi
+    chi_tiet_cau_trung                1861 bản ghi
+    chi_tiet_cau_trung_highlight        88 bản ghi
+    chi_tiet_doan_chap_va              136 bản ghi
+    chi_tiet_doan_trung                131 bản ghi
+    chi_tiet_nop_bai                     3 bản ghi
+    counter                              2 bản ghi
+    giang_vien                           1 bản ghi
+    ket_qua_kiem_tra                    94 bản ghi
+    lich_su_kiem_tra                     1 bản ghi
+    lop_hoc                              2 bản ghi
+    nguoi_dung                           8 bản ghi
+    sinh_vien                            6 bản ghi
+    thong_ke                            34 bản ghi
+
+    TỔNG: 135624 bản ghi / 17 bảng
+
+Ra chữ đỏ hoặc số không khớp thì chụp màn hình gửi lại, đừng chạy tiếp.
+
+Lưu ý: ba tài khoản vừa đăng ký thử trên cơ sở dữ liệu trống sẽ bị xoá, các
+tài khoản cũ quay trở lại.
+
+
+BƯỚC 4. Chạy lại và đăng nhập
+------------------------------
+
+Mở hai cửa sổ lệnh như thường lệ:
+
+    node server.js
+    node workers/worker.js
+
+Mở giao diện, bấm Ctrl + F5, đăng nhập bằng tài khoản cũ.
+
+
+CÒN MỘT THỨ NỮA CẦN KIỂM TRA
+=============================
+
+Cơ sở dữ liệu chỉ chứa thông tin, không chứa tệp tài liệu. Các tệp .docx và
+.pdf đã nộp nằm trong ba thư mục uploads, upload2 và restructuring_data
+trong thư mục dự án.
+
+Kiểm tra ba thư mục đó còn trong thư mục dự án không. Thiếu thì chép từ thư
+mục dự án cũ sang. Thiếu chúng thì danh sách tài liệu vẫn hiện đầy đủ nhưng
+mở ra xem nội dung sẽ báo không tìm thấy tệp.
+
+
+DỮ LIỆU CŨ TRÊN MÁY CÓ THỂ VẪN CÒN
+===================================
+
+Bản cài MongoDB mới không xoá dữ liệu của bản cũ. Nếu trong thư mục
+C:\Program Files\MongoDB\Server còn thư mục của phiên bản trước — ví dụ 7.0
+hoặc 6.0 — thì dữ liệu cũ vẫn nằm nguyên trong đó.
+
+Không cần dùng tới nữa vì bản khôi phục kèm đây đã đầy đủ, nhưng cũng đừng
+xoá thư mục đó đi.

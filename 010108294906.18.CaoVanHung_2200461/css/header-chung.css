@@ -1,0 +1,164 @@
+/* ==========================================================================
+   THANH ĐIỀU HƯỚNG DÙNG CHUNG
+
+   Mỗi trang trước đây tự định nghĩa header trong file CSS riêng với khoảng
+   cách và cỡ chữ khác nhau (chỗ thì gap 50px, chỗ 30px, chỗ căn theo
+   line-height 80px) nên chuyển trang là header nhảy một kiểu. File này nạp
+   sau cùng ở mọi trang để chốt một khuôn duy nhất.
+
+   Cỡ chữ và khoảng cách dùng clamp: màn rộng giữ nguyên 20px như thiết kế
+   gốc, màn hẹp tự co lại nên tên trang và menu không bao giờ dính vào nhau.
+   ========================================================================== */
+
+/* Vài file CSS trang dùng !important cho cỡ chữ và đệm riêng, nên khuôn chung
+   ở đây cũng phải dùng !important thì mới chốt được một kiểu duy nhất. */
+header {
+    background: #fff;
+}
+
+.menu {
+    width: 100%;
+    padding: 0 !important;
+}
+
+.menu-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: clamp(16px, 2vw, 40px);
+    width: 100%;
+    max-width: 1860px;
+    margin: 0 auto;
+    padding: 0 22px;
+    box-sizing: border-box;
+    min-height: 92px !important;
+    height: 92px !important;
+}
+
+/* --- Khối logo --- */
+.logo {
+    display: flex;
+    align-items: center;
+    gap: clamp(10px, 1.1vw, 24px);
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.menu img,
+.logo img {
+    width: clamp(66px, 5vw, 94px) !important;
+    height: auto !important;
+    flex-shrink: 0;
+    border-radius: 50%;
+}
+
+.logo p {
+    margin: 0;
+    text-decoration: none;
+    color: #0655FF;
+    font-weight: bold;
+    font-size: clamp(16px, 1.25vw, 23px) !important;
+    line-height: 1.3 !important;
+    white-space: normal;
+}
+
+/* --- Danh sách mục ---
+   Khoảng cách giữa các mục: giãn vừa đủ để cụm menu không co cụm sát bên phải,
+   nhưng không rộng quá làm các mục rời rạc. */
+.menu ul {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: clamp(18px, 2.6vw, 46px);
+    margin: 0;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.menu ul li {
+    display: flex;
+    align-items: center;
+}
+
+.menu a {
+    text-decoration: none;
+    color: #0655FF;
+    font-weight: bold;
+    font-size: clamp(16px, 1.25vw, 23px) !important;
+    line-height: 1.3 !important;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+}
+
+.menu a:hover {
+    color: red;
+}
+
+/* --- Ô tài khoản bên phải --- */
+.user-avatar-btn {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.user-avatar-btn img,
+#userAvatarImg {
+    width: 44px !important;
+    height: 44px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+/* Tên tài khoản dài thì xuống thành hai dòng ngay trong ô của nó, thay vì kéo
+   dài ra đẩy cả cụm menu sang trái làm tên phần mềm bị vắt dòng. Quá hai dòng
+   thì cắt bớt và thêm dấu ba chấm. */
+#navUserName {
+    font-size: clamp(16px, 1.25vw, 23px) !important;
+    font-weight: bold;
+    color: #0655FF;
+    white-space: normal;
+    max-width: 190px;
+    line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+}
+
+/* Tên phần mềm bên trái không được vắt dòng vì tên tài khoản dài */
+.logo p {
+    white-space: nowrap !important;
+}
+
+/* Các mục trong menu thả xuống giữ cỡ chữ riêng, không theo cỡ của thanh trên */
+.user-dropdown-menu .dropdown-item,
+.user-dropdown-menu a {
+    font-size: 15px !important;
+    font-weight: normal;
+    white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+    .menu-container {
+        min-height: 78px !important;
+        height: 78px !important;
+        padding: 0 14px;
+    }
+
+    /* Màn hẹp thì thu khoảng cách lại, không thì menu tràn ra ngoài */
+    .menu ul {
+        gap: clamp(14px, 1.8vw, 26px);
+    }
+
+    .logo p {
+        max-width: 220px;
+    }
+}

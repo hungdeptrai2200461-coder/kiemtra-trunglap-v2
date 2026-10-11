@@ -1,0 +1,1007 @@
+/**
+ * ============================================================================
+ * MODULE ĐỐI SÁNH VĂN BẢN VÀ KIỂM TRA TRÙNG LẶP TỐI ƯU (kiem_tra_trung_lap.js)
+ * PHIÊN BẢN PRODUCTION - HOÀN CHỈNH & CHUẨN XÁC TUYỆT ĐỐI
+ * ============================================================================
+ */
+const fs = require('fs');
+const path = require('path');
+const {
+    tinhDoTuongDongWinnowing
+} = require('./winnowing');
+const { tinhDoTuongDongJaccard } = require('./jaccard');
+const CauHinhHeThong = require('../models/cau_hinh_he_thong');
+const ChiSoCau = require('../models/chi_so_cau');
+const BaoCao = require('../models/bao_cao');
+const {
+    buildPassageMatches,
+    demDoanTrungCuaBai
+} = require('./passage_match');
+const {
+    buildPatchworkMatches
+} = require('./patchwork_match');
+const {
+    phatHienTrungToanBai
+} = require('./trung_toan_bai');
+
+// Nạp tập từ dừng (stopwords) tiếng Việt.
+// Mỗi trường hợp hỏng phải báo đúng nguyên nhân của nó. Trước đây mọi lỗi đều
+// in chung câu "không tìm thấy file", nên khi thiếu require('path') thì màn hình
+// vẫn báo mất tệp — tệp nằm ngay đó mà cứ đi tìm mãi.
+let STOP_WORDS = new Set();
+const duongDanTuDung = path.join(__dirname, 'stopwords-vi.txt');
+try {
+    if (!fs.existsSync(duongDanTuDung)) {
+        console.warn(`⚠️ Không có tệp từ dừng tại ${duongDanTuDung} — bỏ qua bộ lọc từ dừng, tỉ lệ trùng lặp sẽ cao hơn thực tế.`);
+    } else {
+        fs.readFileSync(duongDanTuDung, 'utf8').split(/\r?\n/).forEach(w => {
+            const cleanWord = w.trim().toLowerCase();
+            if (cleanWord) STOP_WORDS.add(cleanWord);
+        });
+        console.log(`✅ Đã nạp ${STOP_WORDS.size} từ dừng tiếng Việt.`);
+    }
+} catch (e) {
+    console.warn(`⚠️ Đọc tệp từ dừng ${duongDanTuDung} bị lỗi: ${e.message} — bỏ qua bộ lọc từ dừng.`);
+}
+
+
+/**
+ * Đổi tổng điểm của một thuật toán thành điểm trung bình theo phần trăm.
+ *
+ * Điểm từng câu luôn nằm trong khoảng 0–1, nên trung bình cũng vậy. Vẫn chặn
+ * trần 100 để một bản ghi cũ lỡ có số lệch cũng không làm bảng thống kê hiện ra
+ * con số vượt mức.
+ */
+function trungBinhPhanTram(tongDiem, soCau) {
+
+    if (!soCau || soCau <= 0) return 0;
+
+    const phanTram = (tongDiem / soCau) * 100;
+
+    return Math.round(Math.min(100, Math.max(0, phanTram)));
+}
+
+
+/**
+ * Hàm tách từ: Chuẩn hóa chuỗi, loại bỏ ký tự đặc biệt, chuyển về chữ thường,
+ * lọc bỏ từ dừng, số thuần túy và các từ quá ngắn.
+ */
+function tachTu(vanBan) {
+    if (!vanBan || typeof vanBan !== 'string') return [];
+    let text = vanBan.toLowerCase();
+    text = text.replace(/[^\p{L}\p{N}\s]/gu, ' ');
+    return text.split(/\s+/)
+        .filter(tu => tu.length > 1 && !STOP_WORDS.has(tu) && !/^\d+$/.test(tu));
+}
+
+/**
+ * Hàm chuẩn hóa vector thưa (Sparse Vector) từ dữ liệu TF-IDF đầu vào.
+ */
+function chuanHoaVectorSparse(vectorObj, tuVungMap) {
+    const sparseMap = new Map();
+    if (!vectorObj || typeof vectorObj !== 'object') return sparseMap;
+
+    if (Array.isArray(vectorObj)) {
+        vectorObj.forEach((val, idx) => {
+            const numVal = Number(val) || 0;
+            if (numVal !== 0) sparseMap.set(idx, numVal);
+        });
+    } else {
+        for (const [key, val] of Object.entries(vectorObj)) {
+            const numVal = Number(val) || 0;
+            if (numVal === 0) continue;
+
+            if (tuVungMap.has(key)) {
+                sparseMap.set(tuVungMap.get(key), numVal);
+            } else {
+                const parsedKey = parseInt(key, 10);
+                if (!isNaN(parsedKey)) {
+                    sparseMap.set(parsedKey, numVal);
+                }
+            }
+        }
+    }
+    return sparseMap;
+}
+
+/**
+ * Hàm tính khoảng cách Cosine trên cấu trúc vector thưa kết hợp trọng số IDF.
+ */
+function tinhCosineSparse(
+    sparseMoi,
+    sparseCu
+) {
+    let dotProduct = 0;
+    let normMoiSq = 0;
+    let normCuSq = 0;
+
+    for (const [idx, val] of sparseMoi) {
+        normMoiSq += val * val;
+
+        if (sparseCu.has(idx)) {
+            dotProduct += val * sparseCu.get(idx);
+        }
+    }
+
+    for (const [, val] of sparseCu) {
+        normCuSq += val * val;
+    }
+
+    const denominator =
+        Math.sqrt(normMoiSq) *
+        Math.sqrt(normCuSq);
+
+    return denominator === 0
+        ? 0
+        : dotProduct / denominator;
+}
+
+/**
+ * Hàm thực thi kiểm tra trùng lặp toàn diện:
+ * - Bước 1: Lọc sạch nhiễu & Chuẩn hóa từ vựng (Tokenization & Normalization qua hàm tachTu).
+ * - Bước 2: Chia nhỏ văn bản theo cấp độ câu (Sentence-Level Splitting) để bắt chính xác từng câu.
+ * - Bước 3: Định tuyến siêu tốc bằng Inverted Index (Chỉ mục ngược).
+ * - Bước 4: Xử lý đạo văn chắp vá, đảo từ bằng kết hợp 3 thuật toán và chọn Math.max.
+ * - Bước 5: Tổng hợp kết quả, tính tỷ lệ tổng thể toàn bài và bóc tách tỷ lệ riêng từng nguồn mẫu.
+ */
+async function checkPlagiarism(
+    idBaoCaoHienTai,
+    nguongTrungLap = null
+) {
+
+    // ==========================================================
+    // KHOI TAO
+    // ==========================================================
+
+    const chiTietCauTrung = [];
+
+    let tongSoCau = 0;
+    let tongSoTu = 0;
+
+    let tongSoCauTrung = 0;
+    let tongSoTuTrung = 0;
+
+    // ==========================================================
+    // NAP IDF TOAN HE THONG
+    // ==========================================================
+
+    const cauHinh =
+        await CauHinhHeThong
+            .findOne({})
+            .lean();
+
+    if (
+        !cauHinh ||
+        !cauHinh.tu_vung_va_idf ||
+        Object.keys(
+            cauHinh.tu_vung_va_idf
+        ).length === 0
+    ) {
+        throw new Error(
+            'Chưa có dữ liệu IDF.'
+        );
+    }
+
+    const tapTuVungToanCuc =
+        Object.keys(
+            cauHinh.tu_vung_va_idf
+        );
+
+    // ==========================================================
+    // NGUONG VA TRONG SO LAY TU MAN QUAN LY CAU HINH
+    // ==========================================================
+
+    // Người gọi truyền ngưỡng riêng thì ưu tiên, không thì dùng ngưỡng
+    // quản trị viên đặt trong màn Quản lý cấu hình.
+    if (nguongTrungLap === null || nguongTrungLap === undefined) {
+        nguongTrungLap = Number(cauHinh.nguong_trung_lap) || 0.5;
+    }
+
+    console.log(
+        `[NGUONG] Đang dùng ngưỡng trùng lặp ${nguongTrungLap} `
+        + `(${Math.round(nguongTrungLap * 100)}%) lấy từ Quản lý cấu hình.`
+    );
+
+    // Thuật toán bị tắt coi như trọng số 0. Nếu bản ghi cấu hình chưa khai báo
+    // danh sách thuật toán thì giữ nguyên bộ trọng số gốc 0.4 / 0.4 / 0.2.
+    const trongSo = { TFIDF_COSINE: 0.4, WINNOWING: 0.4, JACCARD: 0.2 };
+
+    if (Array.isArray(cauHinh.danh_sach_thuat_toan)
+        && cauHinh.danh_sach_thuat_toan.length > 0) {
+
+        for (const ma of Object.keys(trongSo)) trongSo[ma] = 0;
+
+        for (const tt of cauHinh.danh_sach_thuat_toan) {
+            if (tt.trang_thai && tt.ma_thuat_toan in trongSo) {
+                trongSo[tt.ma_thuat_toan] = Number(tt.trong_so) || 0;
+            }
+        }
+    }
+
+    // Dùng thẳng bộ trọng số quản trị viên đã đặt, không quy đổi gì thêm.
+    //
+    // Màn Quản lý cấu hình chỉ cho lưu khi tổng các thuật toán đang bật đúng
+    // 100%, nên bộ số đọc lên ở đây đã có tổng bằng 1. Trước đây chỗ này tự chia
+    // cả bộ cho tổng của chúng: đặt 50/50/30 vẫn lưu được nhưng lúc chấm lại
+    // chạy 38,5/38,5/23 — số hiện trên màn hình không phải số đang chạy.
+    const tongTrongSo = Object.values(trongSo)
+        .reduce((tong, so) => tong + so, 0);
+
+    if (tongTrongSo <= 0) {
+        // Bản ghi cấu hình cũ tắt sạch cả ba thuật toán thì không còn gì để so;
+        // quay về bộ mặc định thay vì cho ra điểm bằng 0 với mọi câu.
+        trongSo.TFIDF_COSINE = 0.4;
+        trongSo.WINNOWING = 0.4;
+        trongSo.JACCARD = 0.2;
+
+        console.warn(
+            '[TRONG_SO] Cấu hình không có thuật toán nào đang bật — dùng bộ mặc '
+            + 'định 0.4 / 0.4 / 0.2.'
+        );
+
+    } else if (Math.round(tongTrongSo * 100) !== 100) {
+        // Bản ghi có từ trước khi màn cấu hình bắt tổng phải bằng 100%. Chỉ báo
+        // cho biết, không tự nắn: quản trị viên vào lưu lại một lượt là xong.
+        console.warn(
+            `[TRONG_SO] Tổng trọng số trong cấu hình là `
+            + `${Math.round(tongTrongSo * 100)}%, không phải 100%. Hãy mở Quản lý `
+            + `cấu hình và chỉnh lại cho đủ.`
+        );
+    }
+
+    console.log(
+        `[TRONG_SO] Đang dùng: `
+        + `TFIDF_COSINE=${trongSo.TFIDF_COSINE.toFixed(4)} `
+        + `WINNOWING=${trongSo.WINNOWING.toFixed(4)} `
+        + `JACCARD=${trongSo.JACCARD.toFixed(4)}`
+    );
+
+
+    const tuVungMap =
+        new Map(
+            tapTuVungToanCuc.map(
+                (tu, idx) => [tu, idx]
+            )
+        );
+
+    const danhSachCau =
+        await ChiSoCau.find({
+            id_bao_cao: idBaoCaoHienTai
+
+        })
+            .sort({
+                sentenceIndex: 1
+            })
+            .lean();
+    const tatCaHash =
+        [
+            ...new Set(
+                danhSachCau.map(
+                    x => x.sentence_hash
+                )
+            )
+        ];
+    const tatCaExactMatch =
+        await ChiSoCau.find({
+            mau_kiem_tra: true,
+            sentence_hash: {
+                $in: tatCaHash
+            },
+            id_bao_cao: {
+                $ne: idBaoCaoHienTai
+            }
+        })
+            .select({
+                sentence_hash: 1,
+                id_bao_cao: 1,
+                sentenceIndex: 1,
+                content: 1,
+                doan_id: 1
+            })
+            .lean();
+
+    const hashMap = new Map();
+
+    for (const row of tatCaExactMatch) {
+
+        if (!hashMap.has(row.sentence_hash)) {
+            hashMap.set(
+                row.sentence_hash,
+                []
+            );
+        }
+
+        hashMap.get(
+            row.sentence_hash
+        ).push(row);
+    }
+
+    if (!danhSachCau.length) {
+        throw new Error(
+            `Khong tim thay ChiSoCau cua ${idBaoCaoHienTai}`
+        );
+    }
+    // ==========================================================
+    // DUYET TUNG CAU
+    // ==========================================================
+
+    let sentenceIndex = 1;
+    const loopStart =
+        Date.now();
+    for (
+        const cauMoi of danhSachCau
+    ) {
+
+        const cleanSentence =
+            cauMoi.clean_content;
+
+        const tokens =
+            tachTu(
+                cleanSentence
+            );
+
+        if (tokens.length === 0) {
+            continue;
+        }
+
+        tongSoCau++;
+        tongSoTu += tokens.length;
+
+        const danhSachNguon = [];
+
+        // ======================================================
+        // EXACT MATCH
+        // ======================================================
+
+        const sentenceHash =
+            cauMoi.sentence_hash;
+
+        const exactMatches =
+            hashMap.get(
+                sentenceHash
+            ) || [];
+
+        for (const exact of exactMatches) {
+
+            danhSachNguon.push({
+
+                id_bao_cao:
+                    exact.id_bao_cao,
+
+                chi_so_cau:
+                    exact.sentenceIndex,
+
+                cau_nguon:
+                    exact.content,
+
+                doan_id_nguon: exact.doan_id || '',
+
+                do_tuong_dong: 1,
+
+                cosine: 1,
+
+                jaccard: 1,
+
+                winnowing: 1
+            });
+        }
+
+        // ======================================================
+        // NEU KHONG CO EXACT MATCH
+        // ======================================================
+
+        if (
+            danhSachNguon.length === 0
+        ) {
+
+            const vectorSparseMoi =
+                chuanHoaVectorSparse(
+                    cauMoi.vector_tf_idf,
+                    tuVungMap
+                );
+
+            const fingerprintsMoi =
+                cauMoi.fingerprints || [];
+            if (fingerprintsMoi.length < 2) {
+                continue;
+            }
+
+            const fingerprintSet =
+                new Set(
+                    fingerprintsMoi
+                );
+
+            const query = {
+
+                mau_kiem_tra: true,
+
+                fingerprints: {
+                    $in:
+                        fingerprintsMoi
+                }
+            };
+
+            if (idBaoCaoHienTai) {
+
+                query.id_bao_cao = {
+                    $ne:
+                        idBaoCaoHienTai
+                };
+            }
+            const candidates =
+                await ChiSoCau.find(query)
+                    .select({
+                        id_bao_cao: 1,
+                        sentenceIndex: 1,
+                        content: 1,
+                        clean_content: 1,
+                        vector_tf_idf: 1,
+                        fingerprints: 1,
+                        fingerprint_count: 1,
+                        doan_id: 1
+                    })
+                    .limit(2000)
+                    .lean();
+
+            const minOverlap =
+                Math.max(
+                    2,
+                    Math.floor(
+                        fingerprintsMoi.length * 0.2
+                    )
+                );
+            for (
+                const candidate
+                of candidates
+            ) {
+                if (
+                    candidate.id_bao_cao === idBaoCaoHienTai
+                ) {
+                    continue;
+                }
+                if (
+                    candidate.fingerprint_count < minOverlap
+                ) {
+                    continue;
+                }
+                let overlap = 0;
+
+                for (const fp of candidate.fingerprints || []) {
+
+                    if (
+                        fingerprintSet.has(fp)
+                    ) {
+                        overlap++;
+                    }
+
+                }
+
+
+                if (
+                    overlap < minOverlap
+                ) {
+                    continue;
+                }
+
+                const vectorSparseCu =
+                    chuanHoaVectorSparse(
+                        candidate.vector_tf_idf,
+                        tuVungMap
+                    );
+
+                const cosine =
+                    tinhCosineSparse(
+                        vectorSparseMoi,
+                        vectorSparseCu
+                    );
+
+                if (cosine < 0.25) {
+                    continue;
+                }
+                const winStart =
+                    Date.now();
+                const winnowing =
+                    tinhDoTuongDongWinnowing(
+                        fingerprintsMoi,
+                        candidate.fingerprints
+                    );
+                // Bước lọc nhanh này chỉ có nghĩa khi Winnowing đang được bật;
+                // nếu quản trị viên tắt nó thì không được loại câu theo nó nữa.
+                if (
+                    trongSo.WINNOWING > 0 &&
+                    winnowing < 0.1
+                ) {
+                    continue;
+                }
+
+                const jRes =
+                    tinhDoTuongDongJaccard(
+                        cleanSentence,
+                        candidate.clean_content
+                    );
+
+                const jaccard =
+                    jRes.doTuongDong || 0;
+
+                const similarity =
+
+                    cosine * trongSo.TFIDF_COSINE +
+
+                    winnowing * trongSo.WINNOWING +
+
+                    jaccard * trongSo.JACCARD;
+
+                if (
+                    similarity >=
+                    nguongTrungLap
+                ) {
+
+                    danhSachNguon.push({
+
+                        id_bao_cao:
+                            candidate.id_bao_cao,
+
+                        chi_so_cau:
+                            candidate.sentenceIndex,
+
+                        cau_nguon:
+                            candidate.content,
+
+                        doan_id_nguon: candidate.doan_id || '',
+
+                        do_tuong_dong:
+                            similarity,
+
+                        cosine,
+
+                        jaccard,
+
+                        winnowing
+                    });
+                }
+            }
+        }
+
+
+        // ======================================================
+        // LUU CHI TIET CAU TRUNG
+        // ======================================================
+
+        if (
+            danhSachNguon.length > 0
+        ) {
+
+            tongSoCauTrung++;
+
+            tongSoTuTrung +=
+                tokens.length;
+            const uniqueMap =
+                new Map();
+
+            for (const source of danhSachNguon) {
+
+                const key =
+                    `${source.id_bao_cao}_${source.chi_so_cau}`;
+
+                if (
+                    !uniqueMap.has(key)
+                ) {
+
+                    uniqueMap.set(
+                        key,
+                        source
+                    );
+                }
+            }
+
+            const danhSachNguonFinal =
+                [...uniqueMap.values()];
+
+            chiTietCauTrung.push({
+
+                // Lấy đúng thứ tự câu đã lưu trong chi_so_cau. Trước đây dùng
+                // biến đếm của vòng lặp, mà các lệnh `continue` phía trên (câu
+                // rỗng, câu ngắn không có fingerprint) bỏ qua bước tăng biến
+                // đếm, nên càng về cuối bài chỉ số càng lệch: gom đoạn trùng /
+                // chắp vá coi hai câu cách nhau là liền nhau, bôi màu lệch câu.
+                chi_so_cau_kiem_tra:
+                    cauMoi.sentenceIndex ?? sentenceIndex,
+
+                // Phần 3 fix: kế thừa mã đoạn văn từ ChiSoCau
+                doan_id:    cauMoi.doan_id    || '',
+
+                cau_kiem_tra:
+                    cauMoi.content,
+
+                so_tu:
+                    tokens.length,
+
+                danh_sach_nguon:
+                    danhSachNguonFinal
+            });
+        }
+        sentenceIndex++;
+    }
+
+    // ==========================================================
+    // PASSAGE MATCH
+    // ==========================================================
+
+    // ==========================================================
+    // BUILD ĐOẠN TRÙNG
+    // ==========================================================
+
+    const chiTietDoanTrungFinal =
+        buildPassageMatches(
+            chiTietCauTrung
+        );
+
+    const occupiedSentences =
+        new Set();
+
+    for (const doan of chiTietDoanTrungFinal) {
+        for (
+            let i = doan.tu_cau_kiem_tra;
+            i <= doan.den_cau_kiem_tra;
+            i++
+        ) {
+            occupiedSentences.add(i);
+        }
+    }
+
+
+    // ==========================================================
+    // PATCHWORK MATCH
+    // ==========================================================
+
+    const freeForPatchwork =
+        chiTietCauTrung.filter(
+            c =>
+                !occupiedSentences.has(
+                    c.chi_so_cau_kiem_tra
+                )
+        );
+
+    const chiTietDoanChapVaFinal =
+        buildPatchworkMatches(
+            freeForPatchwork
+        );
+
+    for (const doan of chiTietDoanChapVaFinal) {
+        for (
+            let i = doan.tu_cau_kiem_tra;
+            i <= doan.den_cau_kiem_tra;
+            i++
+        ) {
+            occupiedSentences.add(i);
+        }
+    }
+    const chiTietCauTrungHighlight =
+        chiTietCauTrung.filter(
+            c =>
+                !occupiedSentences.has(
+                    c.chi_so_cau_kiem_tra
+                )
+        );
+
+
+    // ==========================================================
+    // THONG KE THEO NGUON
+    // ==========================================================
+
+    const thongKeMap = {};
+    const countedMap = new Set();
+    for (
+        const sentence
+        of chiTietCauTrung
+    ) {
+
+        for (
+            const source
+            of sentence.danh_sach_nguon
+        ) {
+
+            if (
+                !thongKeMap[
+                source.id_bao_cao
+                ]
+            ) {
+
+                thongKeMap[
+                    source.id_bao_cao
+                ] = {
+
+                    id_bao_cao:
+                        source.id_bao_cao,
+
+                    so_cau_trung: 0,
+
+                    so_tu_trung: 0,
+
+                    so_doan_trung: 0,
+
+                    so_doan_chap_va: 0,
+
+                    tong_cosine: 0,
+
+                    tong_jaccard: 0,
+
+                    tong_winnowing: 0
+                };
+            }
+
+            const tk =
+                thongKeMap[
+                source.id_bao_cao
+                ];
+
+            const key =
+                `${source.id_bao_cao}_${sentence.chi_so_cau_kiem_tra}`;
+
+            // Một câu của người nộp có thể khớp với nhiều câu trong cùng một
+            // báo cáo mẫu. Nếu mỗi lần khớp đều cộng thêm điểm cosine/jaccard/
+            // winnowing mà số câu trùng chỉ đếm một lần thì lúc chia ra trung
+            // bình sẽ lớn hơn 1, nên bảng thống kê hiện ra những con số vô lý
+            // như 128%. Chỉ giữ lần khớp tốt nhất của mỗi câu với mỗi báo cáo
+            // mẫu thì tử số và mẫu số mới đếm cùng một thứ.
+            if (
+                !countedMap.has(key)
+            ) {
+
+                countedMap.add(key);
+
+                tk.so_cau_trung++;
+
+                tk.so_tu_trung +=
+                    sentence.so_tu;
+
+                tk.tong_cosine +=
+                    source.cosine;
+
+                tk.tong_jaccard +=
+                    source.jaccard;
+
+                tk.tong_winnowing +=
+                    source.winnowing;
+            }
+        }
+    }
+
+    for (
+        const passage
+        of chiTietDoanTrungFinal
+    ) {
+
+        const tk =
+            thongKeMap[
+            passage.id_bao_cao_nguon
+            ];
+
+        if (tk) {
+
+            tk.so_doan_trung++;
+        }
+    }
+
+    // Đoạn chắp vá: hai câu nằm rời nhau trong bài mẫu bị ghép liền lại trong
+    // bài nộp. Đây cũng là một dạng trùng theo đoạn nên phải đếm riêng cho từng
+    // báo cáo mẫu, không gộp chung vào so_doan_trung.
+    for (
+        const passage
+        of chiTietDoanChapVaFinal
+    ) {
+
+        // Một đoạn chắp vá được ghép từ nhiều câu rời nhau nên có thể dính tới
+        // vài báo cáo mẫu cùng lúc; đoạn đó tính cho từng nguồn góp mặt.
+        const dsNguon =
+            Array.isArray(passage.danh_sach_id_bao_cao_nguon)
+                ? passage.danh_sach_id_bao_cao_nguon
+                : [];
+
+        for (const idNguon of new Set(dsNguon)) {
+
+            const tk = thongKeMap[idNguon];
+
+            if (tk) {
+
+                tk.so_doan_chap_va++;
+            }
+        }
+    }
+    const danhSachIdBaoCaoNguon =
+        Object.keys(thongKeMap);
+
+    const danhSachBaoCaoNguon =
+        await BaoCao.find({
+            id_bao_cao: {
+                $in: danhSachIdBaoCaoNguon
+            }
+        })
+            .select({
+                id_bao_cao: 1,
+                tieu_de: 1
+            })
+            .lean();
+
+    const mapTenBaoCao =
+        new Map(
+            danhSachBaoCaoNguon.map(
+                item => [
+                    item.id_bao_cao,
+                    item.tieu_de || ""
+                ]
+            )
+        );
+
+    const thongKeTheoMau =
+        Object.values(
+            thongKeMap
+        )
+            .map(tk => ({
+
+                id_bao_cao:
+                    tk.id_bao_cao,
+
+                ten_bao_cao:
+                    mapTenBaoCao.get(
+                        tk.id_bao_cao
+                    ) || "",
+
+                so_cau_trung:
+                    tk.so_cau_trung,
+
+                so_tu_trung:
+                    tk.so_tu_trung,
+
+                so_doan_trung:
+                    tk.so_doan_trung,
+
+                so_doan_chap_va:
+                    tk.so_doan_chap_va,
+
+                ti_le_trung_lap:
+                    tongSoTu > 0
+                        ? Math.round(
+                            (
+                                tk.so_tu_trung /
+                                tongSoTu
+                            ) * 10000
+                        ) / 100
+                        : 0,
+
+                // Ba con số dưới đây là điểm trung bình của từng thuật toán
+                // trên các câu trùng với đúng báo cáo mẫu này, quy ra phần
+                // trăm. Mỗi câu chỉ góp một lần nên luôn nằm trong 0–100.
+                cosine:
+                    trungBinhPhanTram(
+                        tk.tong_cosine,
+                        tk.so_cau_trung
+                    ),
+
+                jaccard:
+                    trungBinhPhanTram(
+                        tk.tong_jaccard,
+                        tk.so_cau_trung
+                    ),
+
+                winnowing:
+                    trungBinhPhanTram(
+                        tk.tong_winnowing,
+                        tk.so_cau_trung
+                    )
+            }));
+
+    // ==========================================================
+    // TRUNG CA BAI
+    // ==========================================================
+
+    // Một báo cáo mẫu phủ gần hết bài nộp thì đây không còn là chuyện vài đoạn
+    // giống nhau nữa mà là chép nguyên bài; phải nói thẳng ra như vậy thay vì
+    // để người chấm tự cộng các đoạn rời lại.
+    const ketQuaTrungToanBai =
+        phatHienTrungToanBai(
+            thongKeTheoMau,
+            tongSoTu,
+            Number(cauHinh.nguong_trung_toan_bai) || undefined
+        );
+
+    for (const tk of thongKeTheoMau) {
+
+        tk.trung_toan_bai =
+            ketQuaTrungToanBai
+                .danh_sach_nguon_trung_toan_bai
+                .some(nguon => nguon.id_bao_cao === tk.id_bao_cao);
+    }
+
+    // ==========================================================
+    // TY LE TOAN BAI
+    // ==========================================================
+
+    const tiLeTrungLap =
+
+        tongSoTu > 0
+
+            ? (
+                tongSoTuTrung /
+                tongSoTu
+            ) * 100
+
+            : 0;
+
+    // ==========================================================
+    // RETURN
+    // ==========================================================
+
+    console.log(
+        `[KET_QUA] ${idBaoCaoHienTai} | `
+        + `${tongSoCauTrung}/${tongSoCau} câu trùng | `
+        + `${tongSoTuTrung}/${tongSoTu} từ trùng | `
+        + `tỉ lệ ${Math.round(tiLeTrungLap * 100) / 100}%`
+        + (
+            ketQuaTrungToanBai.trung_toan_bai
+                ? ` | TRÙNG CẢ BÀI với `
+                + ketQuaTrungToanBai
+                    .danh_sach_nguon_trung_toan_bai
+                    .map(n => `${n.id_bao_cao} (${n.ti_le_phu}%)`)
+                    .join(', ')
+                : ''
+        )
+    );
+
+    return {
+
+        tong_so_cau:
+            tongSoCau,
+
+        tong_so_tu:
+            tongSoTu,
+
+        tong_so_cau_trung:
+            tongSoCauTrung,
+
+        tong_so_tu_trung:
+            tongSoTuTrung,
+
+        // Đếm theo bài nộp: cùng một đoạn khớp nhiều nguồn chỉ tính một lần
+        tong_so_doan_trung:
+            demDoanTrungCuaBai(chiTietDoanTrungFinal),
+
+        tong_so_doan_chap_va:
+            chiTietDoanChapVaFinal.length,
+
+        so_nguon_phat_hien:
+            thongKeTheoMau.length,
+
+        trung_toan_bai:
+            ketQuaTrungToanBai.trung_toan_bai,
+
+        nguong_trung_toan_bai:
+            ketQuaTrungToanBai.nguong_trung_toan_bai,
+
+        danh_sach_nguon_trung_toan_bai:
+            ketQuaTrungToanBai.danh_sach_nguon_trung_toan_bai,
+
+        ti_le_trung_lap:
+            Math.round(
+                tiLeTrungLap * 100
+            ) / 100,
+
+        thong_ke_theo_mau:
+            thongKeTheoMau,
+
+        chi_tiet_cau_trung:
+            chiTietCauTrung,
+
+        chi_tiet_cau_trung_highlight:
+            chiTietCauTrungHighlight,
+
+        chi_tiet_doan_trung:
+            chiTietDoanTrungFinal,
+
+        chi_tiet_doan_chap_va:
+            chiTietDoanChapVaFinal
+    };
+}
+module.exports = {
+    checkPlagiarism
+};

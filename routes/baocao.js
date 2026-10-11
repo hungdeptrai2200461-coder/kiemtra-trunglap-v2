@@ -1,0 +1,596 @@
+const express = require('express');
+const { timTepBaoCao, tenTepGoc } = require('../utils/duong_dan_tep');
+const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { taoMaBaoCaoMoi } = require('../utils/tao_ma_bao_cao');
+
+const BaoCao = require('../models/bao_cao');
+const KetQuaKiemTra = require('../models/ket_qua_kiem_tra');
+const SinhVien = require('../models/sinh_vien');
+const { capNhatSoBaoCao } = require('../utils/cap_nhat_so_bao_cao');
+
+// 1. IMPORT CÁC HÀM TIỀN XỬ LÝ VÀ ĐỌC TEXT
+const { trichXuatVanBan } = require('../utils/trich_xuat_text');
+const { trichXuatTheoTrang } = require('../utils/trich_xuat_theo_trang');
+
+// 2. IMPORT HÀM ĐẨY TASK VÀO HÀNG ĐỢI REDIS
+const { addPlagiarismTask } = require('../workers/queue');
+
+// 3. GIỚI HẠN DUNG LƯỢNG VÀ ĐỊNH DẠNG THEO MÀN QUẢN LÝ CẤU HÌNH
+const { apDungGioiHanTep } = require('../utils/gioi_han_tep');
+
+// Cấu hình Multer lưu file upload vào thư mục uploads/
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, 'uploads/');
+    },
+    filename: function (req, file, cb) {
+        cb(null, Date.now() + '-' + file.originalname);
+    }
+});
+const upload = multer({ storage: storage });
+
+const upload2Dir = path.resolve(__dirname, '../upload2');
+if (!fs.existsSync(upload2Dir)) {
+    fs.mkdirSync(upload2Dir, { recursive: true });
+}
+
+// Trạng thái ghi trong bảng bao_cao khi không đọc được chữ hoặc lượt chấm hỏng
+const TRANG_THAI_LOI = 'Lỗi';
+
+/**
+ * Ghép một bản ghi báo cáo với kết quả chấm của nó thành dòng cho bảng Quản lý
+ * tài liệu.
+ *
+ * Ba trường hợp:
+ *
+ *   - Đã chấm xong  → tỉ lệ thật, trạng thái "Đã xử lý".
+ *   - Đánh dấu Lỗi  → 0% và trạng thái "Lỗi". Rơi vào đây là những tệp PDF hoặc
+ *     Word dựng hoàn toàn từ ảnh: không bóc được chữ nào nên không có gì để so.
+ *     Trước đây chỗ này ép mọi bản ghi chưa có kết quả về "Đang xử lý", nên tài
+ *     liệu hỏng nằm quay vòng tròn chờ mãi không dừng.
+ *   - Còn lại       → đang nằm trong hàng chờ, để "Đang xử lý".
+ *
+ * @param {Object} baoCao Bản ghi trong bảng bao_cao
+ * @param {Object|undefined} ketQua Bản ghi ket_qua_kiem_tra tương ứng
+ */
+function dungDongDanhSach(baoCao, ketQua) {
+    const daChamXong = !!ketQua && ketQua.trang_thai === 'hoan_thanh';
+
+    if (daChamXong) {
+        return {
+            ...baoCao,
+            do_trung_lap: ketQua.ti_le_trung_lap,
+            trang_thai: 'Đã xử lý'
+        };
+    }
+
+    if (baoCao.trang_thai === TRANG_THAI_LOI) {
+        return {
+            ...baoCao,
+            do_trung_lap: 0,
+            trang_thai: TRANG_THAI_LOI
+        };
+    }
+
+    return {
+        ...baoCao,
+        do_trung_lap: null,
+        trang_thai: 'Đang xử lý'
+    };
+}
+
+// API GET: Lấy danh sách báo cáo có lọc theo id_sinh_vien
+router.get('/', async (req, res) => {
+    try {
+        const { id_sinh_vien } = req.query;
+        let query = {};
+
+        if (id_sinh_vien) {
+            query.id_sinh_vien = id_sinh_vien;
+        }
+
+        const danhSach = await BaoCao.find(query)
+            .select(
+                'id_bao_cao tieu_de ngay_tai_len trang_thai id_sinh_vien'
+            )
+            .sort({ ngay_tai_len: -1 })
+            .lean();
+
+        const dsIdBaoCao =
+            danhSach.map(
+                bc => bc.id_bao_cao
+            );
+        if (dsIdBaoCao.length === 0) {
+            return res.json({
+                success: true,
+                data: []
+            });
+        }
+
+        const dsKetQua =
+            await KetQuaKiemTra.find({
+                id_bao_cao: {
+                    $in: dsIdBaoCao
+                }
+            })
+                .select(
+                    'id_bao_cao ti_le_trung_lap trang_thai'
+                )
+                .lean();
+
+        const mapKetQua =
+            new Map();
+
+        for (const item of dsKetQua) {
+
+            mapKetQua.set(
+                item.id_bao_cao,
+                item
+            );
+
+        }
+
+        const ketQuaHoanChinh =
+            danhSach.map(
+                bc => dungDongDanhSach(bc, mapKetQua.get(bc.id_bao_cao))
+            );
+
+        return res.json({ success: true, data: ketQuaHoanChinh });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// API POST /upload
+router.post('/upload', upload.single('file'), apDungGioiHanTep, async (req, res) => {
+    try {
+        const file = req.file;
+        const { id_sinh_vien } = req.body;
+
+        if (!file) {
+            return res.status(400).json({ success: false, message: 'Chưa có file nào được tải lên!' });
+        }
+
+        const originalName = file.originalname;
+        const tieuDe = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+        const tepTin = path.resolve(file.path).replace(/\\/g, '/');
+        const ext = path.extname(originalName).toLowerCase();
+
+        if (ext !== '.pdf' && ext !== '.doc' && ext !== '.docx' && file.mimetype !== 'text/plain') {
+            if (fs.existsSync(tepTin)) fs.unlinkSync(tepTin);
+            return res.status(400).json({ success: false, message: 'Chỉ hỗ trợ file .doc, .docx, .pdf hoặc text!' });
+        }
+
+        const idBaoCao =
+            await taoMaBaoCaoMoi();
+
+        // "Kiểm tra một phần": chỉ lấy chữ nằm trong đúng các trang vật lý
+        // người dùng khai, ví dụ "5" là từ trang 5 tới hết, "10-25" là đúng
+        // đoạn trang 10 đến 25. Trước đây hai tham số này được gửi lên nhưng
+        // máy chủ bỏ qua nên bài nào cũng bị chấm toàn bộ.
+        const kieuKiemTra = (req.body.checkType || 'all').trim();
+        const chuoiPhamVi = (req.body.pageRange || '').trim();
+
+        let phamViDaCham = '';
+        let rawText = "";
+
+        if (file.mimetype === 'text/plain') {
+            rawText = fs.readFileSync(file.path, 'utf-8');
+
+        } else if (kieuKiemTra === 'part' && chuoiPhamVi) {
+            const theoTrang = await trichXuatTheoTrang(file.path, chuoiPhamVi);
+
+            if (theoTrang.van_ban) {
+                rawText = theoTrang.van_ban;
+                phamViDaCham = theoTrang.mo_ta;
+            } else {
+                // Không cắt được theo trang (tệp lạ, hỏng, hoặc phạm vi nằm
+                // ngoài tài liệu) thì vẫn chấm toàn bộ để người dùng không mất
+                // bài, và ghi lại lý do trong nhật ký máy chủ.
+                console.warn(
+                    `⚠️ Không áp dụng được phạm vi trang "${chuoiPhamVi}" cho `
+                    + `${originalName} — chấm toàn bộ tài liệu.`
+                );
+                rawText = await trichXuatVanBan(file.path);
+            }
+
+        } else {
+            rawText = await trichXuatVanBan(file.path);
+        }
+
+        // Tệp không bóc được chữ nào — thường là PDF hoặc Word dựng hoàn toàn từ
+        // ảnh chụp/scan. Vẫn ghi nhận tài liệu, nhưng để trạng thái "Lỗi" và
+        // không đẩy vào hàng chờ chấm: không có chữ thì không có gì để so.
+        //
+        // Trước đây chỗ này trả lỗi 400 rồi xoá luôn tệp, nên người dùng tải lên
+        // xong không thấy dòng nào trong bảng mà cũng không biết vì sao.
+        const khongDocDuocChu = !rawText || rawText.trim() === '';
+
+        const newBaoCao = new BaoCao({
+            id_bao_cao: idBaoCao,
+            tieu_de: tieuDe,
+            loai_bao_cao: req.body.loaiBaoCao || "Báo cáo kiểm tra",
+            tep_tin: tepTin,
+            noi_dung_tien_xu_ly: khongDocDuocChu ? '' : rawText,
+            ngay_tai_len: new Date(),
+            trang_thai: khongDocDuocChu ? TRANG_THAI_LOI : "Đang xử lý",
+            id_sinh_vien: id_sinh_vien || "",
+            mau_kiem_tra: false,
+            pham_vi_trang: phamViDaCham
+        });
+
+        const savedBaoCao = await newBaoCao.save();
+
+        // Đếm lại số báo cáo của sinh viên sau khi thêm bản ghi mới
+        try {
+            await capNhatSoBaoCao(id_sinh_vien);
+        } catch (e) {
+            console.error('Không cập nhật được số báo cáo của sinh viên:', e.message);
+        }
+
+        if (khongDocDuocChu) {
+            console.warn(
+                `⚠️ ${idBaoCao} (${originalName}): không bóc được chữ nào — `
+                + `nhiều khả năng tài liệu chỉ gồm ảnh. Đánh dấu "Lỗi", độ trùng `
+                + `lặp 0%.`
+            );
+
+            const soMBTep = (file.size / 1024 / 1024).toFixed(2);
+
+            return res.status(200).json({
+                success: true,
+                khong_doc_duoc_chu: true,
+                message: 'Không đọc được chữ nào trong tệp — tài liệu nhiều khả '
+                    + 'năng chỉ gồm ảnh. Đã ghi nhận với trạng thái "Lỗi" và độ '
+                    + 'trùng lặp 0%.',
+                chi_tiet_loi: {
+                    loai_loi: 'KHONG_DOC_DUOC_CHU',
+                    ten_tep: originalName,
+                    dinh_dang: path.extname(originalName).toLowerCase(),
+                    dung_luong_mb: soMBTep,
+                    ly_do: 'Hệ thống không trích xuất được văn bản từ tệp này. '
+                        + 'Tệp nhiều khả năng được tạo từ hình ảnh chụp/scan, '
+                        + 'không có lớp văn bản có thể đọc máy.',
+                    goi_y: [
+                        'Sử dụng tệp có lớp văn bản gốc (không phải ảnh scan)',
+                        'Nếu là PDF scan, hãy dùng phần mềm OCR để chuyển sang văn bản trước',
+                        'Chuyển đổi sang định dạng .docx nếu có thể'
+                    ]
+                },
+                data: savedBaoCao
+            });
+        }
+
+        await addPlagiarismTask({
+            idBaoCaoMoi: idBaoCao,
+
+            noiDungVanBan: rawText,
+
+            idSinhVien: id_sinh_vien || null
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Đã tiếp nhận tài liệu và đang xử lý ngầm qua Redis!",
+            data: savedBaoCao
+        });
+
+    } catch (error) {
+        console.error("Lỗi server khi upload:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// API GET /api/bao-cao/chi-tiet/:id
+router.get('/chi-tiet/:id', async (req, res) => {
+    try {
+        const baoCaoId = req.params.id;
+
+        let baoCao = await BaoCao.findOne({ id_bao_cao: baoCaoId });
+        if (!baoCao && baoCaoId.match(/^[0-9a-fA-F]{24}$/)) {
+            baoCao = await BaoCao.findById(baoCaoId);
+        }
+
+        if (!baoCao) {
+            return res.status(404).json({ success: false, message: "Không tìm thấy báo cáo!" });
+        }
+
+        const ketQuaKiemTra = await KetQuaKiemTra.findOne({ id_bao_cao: baoCao.id_bao_cao }).lean();
+        const daHoanThanh = baoCao.do_trung_lap !== undefined && baoCao.do_trung_lap !== null;
+
+        return res.status(200).json({
+            success: true,
+            hoan_thanh: daHoanThanh,
+            data: {
+                ...baoCao.toObject(),
+                ket_qua_chi_tiet: ketQuaKiemTra || null
+            }
+        });
+    } catch (error) {
+        console.error("Lỗi khi lấy chi tiết báo cáo:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// API DELETE /api/bao-cao/:id
+router.delete('/:id', async (req, res) => {
+    try {
+        const baoCaoId = req.params.id;
+
+        let deletedBaoCao = await BaoCao.findOneAndDelete({ id_bao_cao: baoCaoId });
+        if (!deletedBaoCao && baoCaoId.match(/^[0-9a-fA-F]{24}$/)) {
+            deletedBaoCao = await BaoCao.findByIdAndDelete(baoCaoId);
+        }
+
+        if (!deletedBaoCao) {
+            return res.status(404).json({ success: false, message: "Không tìm thấy tài liệu cần xóa!" });
+        }
+
+        if (deletedBaoCao.tep_tin && fs.existsSync(deletedBaoCao.tep_tin)) {
+            try {
+                fs.unlinkSync(deletedBaoCao.tep_tin);
+            } catch (errFile) {
+                console.error("Không thể xóa tệp vật lý:", errFile);
+            }
+        }
+
+        // Xóa luôn file bôi màu trong upload2 nếu có
+        const highlightedPdfPath = path.join(upload2Dir, `${deletedBaoCao.id_bao_cao}.pdf`);
+        if (fs.existsSync(highlightedPdfPath)) {
+            try { fs.unlinkSync(highlightedPdfPath); } catch (e) { }
+        }
+
+        await KetQuaKiemTra.deleteMany({ id_bao_cao: deletedBaoCao.id_bao_cao });
+
+        // Đếm lại để số báo cáo giảm theo sau khi xoá
+        try {
+            await capNhatSoBaoCao(deletedBaoCao.id_sinh_vien);
+        } catch (e) {
+            console.error('Không cập nhật được số báo cáo của sinh viên:', e.message);
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Đã xóa thành công tài liệu và dữ liệu liên quan!"
+        });
+
+    } catch (error) {
+        console.error("Lỗi khi xóa báo cáo:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+router.post('/upload-khac', upload.single('file'), async (req, res) => {
+    try {
+        let inputId = req.body.id_sinh_vien;
+        let idSinhVienChinhXac = inputId;
+
+        if (inputId) {
+            const thongTinSV = await SinhVien.findOne({
+                $or: [{ id_sinh_vien: inputId }, { id_nguoi_dung: inputId }]
+            }).lean();
+
+            if (thongTinSV) {
+                idSinhVienChinhXac = thongTinSV.id_sinh_vien;
+            }
+        }
+
+        const baoCaoMoi = new BaoCao({
+            id_sinh_vien: idSinhVienChinhXac,
+            tieu_de: req.file ? req.file.originalname : "Tài liệu mới",
+            tep_tin: req.file ? req.file.path : "",
+            ngay_tai_len: new Date(),
+            trang_thai: "Đang xử lý",
+        });
+
+        await baoCaoMoi.save();
+
+        try {
+            await capNhatSoBaoCao(idSinhVienChinhXac);
+        } catch (e) {
+            console.error('Không cập nhật được số báo cáo của sinh viên:', e.message);
+        }
+
+        return res.json({ success: true, message: "Upload thành công", data: baoCaoMoi });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+router.get('/tai-lieu-nop/:idNguoiDung', async (req, res) => {
+    try {
+        const idNguoiDung = req.params.idNguoiDung;
+
+        const sinhVien = await SinhVien.findOne({
+            $or: [{ id_nguoi_dung: idNguoiDung }, { id_sinh_vien: idNguoiDung }]
+        }).lean();
+
+        let danhSachIdCanTim = [idNguoiDung];
+        if (sinhVien) {
+            if (sinhVien.id_sinh_vien) danhSachIdCanTim.push(sinhVien.id_sinh_vien);
+            if (sinhVien.id_nguoi_dung) danhSachIdCanTim.push(sinhVien.id_nguoi_dung);
+        }
+
+        danhSachIdCanTim = [...new Set(danhSachIdCanTim)];
+
+        const danhSachBaoCao = await BaoCao.find({
+            id_sinh_vien: { $in: danhSachIdCanTim }
+        })
+            .select(
+                'id_bao_cao tieu_de ngay_tai_len trang_thai id_sinh_vien'
+            )
+            .sort({ ngay_tai_len: -1 })
+            .lean();
+
+
+        if (!danhSachBaoCao || danhSachBaoCao.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+        const dsIdBaoCao =
+            danhSachBaoCao.map(
+                bc => bc.id_bao_cao
+            );
+
+        const dsKetQua =
+            await KetQuaKiemTra.find({
+                id_bao_cao: {
+                    $in: dsIdBaoCao
+                }
+            })
+                .select(
+                    'id_bao_cao ti_le_trung_lap trang_thai'
+                )
+                .lean();
+
+        const mapKetQua = new Map();
+
+        for (const item of dsKetQua) {
+            mapKetQua.set(
+                item.id_bao_cao,
+                item
+            );
+        }
+
+        const ketQuaHoanChinh =
+            danhSachBaoCao.map(
+                bc => dungDongDanhSach(bc, mapKetQua.get(bc.id_bao_cao))
+            );
+
+        return res.json({ success: true, data: ketQuaHoanChinh });
+    } catch (error) {
+        console.error("Lỗi API tai-lieu-nop:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+router.get('/tai-xuong/:id_bao_cao', async (req, res) => {
+    try {
+        const { id_bao_cao } = req.params;
+
+        const baoCao = await BaoCao.findOne({ id_bao_cao: id_bao_cao });
+        if (!baoCao || !baoCao.tep_tin) {
+            return res.status(404).json({
+                success: false,
+                message: "Không tìm thấy thông tin tệp tin trong cơ sở dữ liệu!"
+            });
+        }
+
+        // Dò tệp theo nhiều cách vì bản ghi cũ mang đường dẫn của máy khác
+        const filePath = timTepBaoCao(baoCao.tep_tin);
+
+        if (!filePath) {
+            return res.status(404).json({
+                success: false,
+                message: "Tệp tin không tồn tại trên hệ thống lưu trữ của server!"
+            });
+        }
+
+        // Giữ đúng tên tệp gốc khi tải về, không để thành tên có dấu thời gian
+        return res.download(filePath, tenTepGoc(baoCao.tep_tin));
+
+    } catch (error) {
+        console.error("Lỗi khi tải xuống tệp tin:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Lỗi server khi tải xuống tệp tin",
+            error: error.message
+        });
+    }
+});
+
+// =========================================================================
+// ROUTE DUY NHẤT TRẢ VỀ FILE PDF ĐÃ BÔI MÀU (CHO IFRAME XEM CHI TIẾT)
+// =========================================================================
+router.get('/chi-tiet/:id/document', async (req, res) => {
+    try {
+        const reportId = req.params.id; // Có thể là id_bao_cao (BC688) hoặc _id MongoDB
+
+        let baoCao = await BaoCao.findOne({ id_bao_cao: reportId });
+        if (!baoCao && reportId.match(/^[0-9a-fA-F]{24}$/)) {
+            baoCao = await BaoCao.findById(reportId);
+        }
+
+        const actualId = baoCao ? baoCao.id_bao_cao : reportId;
+
+        // Ưu tiên 1: Tìm file PDF bôi màu trong thư mục upload2 theo mã chuẩn id_bao_cao
+        let filePath = path.join(upload2Dir, `${actualId}.pdf`);
+
+        // Nếu không thấy, thử tìm theo reportId trực tiếp trên URL
+        if (!fs.existsSync(filePath)) {
+            const altPath = path.join(upload2Dir, `${reportId}.pdf`);
+            if (fs.existsSync(altPath)) {
+                filePath = altPath;
+            }
+        }
+
+        // Nếu vẫn không có file bôi màu trong upload2, kiểm tra xem worker đã hoàn tất chưa hay trả về 404
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({
+                success: false,
+                message: `File PDF bôi màu cho báo cáo ${reportId} chưa được khởi tạo hoặc đang trong tiến trình xử lý!`
+            });
+        }
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
+        return res.sendFile(filePath);
+
+    } catch (error) {
+        console.error("Lỗi khi lấy file document:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// =========================================================================
+// SỬA THÔNG TIN MỘT TÀI LIỆU
+// Chỉ cho sửa phần mô tả (tiêu đề, loại báo cáo); tệp tin và kết quả chấm
+// giữ nguyên vì sửa được sẽ làm lệch với dữ liệu đã đối sánh.
+// =========================================================================
+router.put('/:id_bao_cao', async (req, res) => {
+    try {
+        const { id_bao_cao } = req.params;
+        const { tieu_de, loai_bao_cao } = req.body;
+
+        if (!tieu_de || !String(tieu_de).trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Tiêu đề tài liệu không được để trống!"
+            });
+        }
+
+        const capNhat = { tieu_de: String(tieu_de).trim() };
+        if (loai_bao_cao !== undefined) {
+            capNhat.loai_bao_cao = String(loai_bao_cao).trim();
+        }
+
+        const daSua = await BaoCao.findOneAndUpdate(
+            { id_bao_cao: id_bao_cao },
+            { $set: capNhat },
+            { returnDocument: 'after' }
+        ).lean();
+
+        if (!daSua) {
+            return res.status(404).json({
+                success: false,
+                message: "Không tìm thấy tài liệu cần sửa!"
+            });
+        }
+
+        const { noi_dung_tien_xu_ly, ...phanTraVe } = daSua;
+
+        return res.json({
+            success: true,
+            message: "Đã cập nhật thông tin tài liệu.",
+            data: phanTraVe
+        });
+
+    } catch (error) {
+        console.error("Lỗi khi sửa thông tin tài liệu:", error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+module.exports = router;
